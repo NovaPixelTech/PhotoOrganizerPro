@@ -1,131 +1,98 @@
 import { useState } from "react";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
-import { useProcessFiles } from "@workspace/api-client-react";
-import type { ProcessRequestAction, ProcessResponse } from "@workspace/api-client-react/src/generated/api.schemas";
-import { Loader2 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { FolderOpen, Download, Info } from "lucide-react";
 
 interface ProcessingDialogProps {
-  sessionId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onProcessStarted: () => void;
-  onProcessComplete: (result: ProcessResponse) => void;
+  onConfirm: (action: "copy" | "move", dryRun: boolean) => void;
+  supportsDirectWrite: boolean;
 }
 
-export function ProcessingDialog({
-  sessionId,
-  open,
-  onOpenChange,
-  onProcessStarted,
-  onProcessComplete,
-}: ProcessingDialogProps) {
-  const [action, setAction] = useState<ProcessRequestAction>("copy");
+export function ProcessingDialog({ open, onOpenChange, onConfirm, supportsDirectWrite }: ProcessingDialogProps) {
+  const [action, setAction] = useState<"copy" | "move">("copy");
   const [dryRun, setDryRun] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  const processMutation = useProcessFiles();
-  const { toast } = useToast();
-
-  const handleStartProcess = async () => {
-    setIsProcessing(true);
-    // Close dialog and show progress view immediately
-    onProcessStarted();
-
-    try {
-      const result = await processMutation.mutateAsync({
-        data: {
-          sessionId,
-          action,
-          dryRun,
-        },
-      });
-      // When the backend returns, hand off the result
-      onProcessComplete(result);
-    } catch (err: unknown) {
-      const msg =
-        err && typeof err === "object" && "error" in err
-          ? String((err as { error: { error?: string } }).error?.error)
-          : "Unknown error occurred.";
-      toast({
-        title: "Processing Failed",
-        description: msg,
-        variant: "destructive",
-      });
-      setIsProcessing(false);
-    }
-  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
           <DialogTitle>Organize Files</DialogTitle>
           <DialogDescription>
-            Choose how you want to organize the processed files.
+            Choose how to handle your files.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-6 py-6">
-          <div className="space-y-4">
-            <Label className="text-base">Action</Label>
-            <RadioGroup
-              defaultValue={action}
-              onValueChange={(v) => setAction(v as ProcessRequestAction)}
-              className="flex flex-col space-y-2"
-            >
-              <div className="flex items-center space-x-3 space-y-0 rounded-md border p-4 hover:bg-muted/50 cursor-pointer">
-                <RadioGroupItem value="copy" id="action-copy" />
-                <Label htmlFor="action-copy" className="flex-1 cursor-pointer font-normal">
-                  <span className="block font-semibold">Copy Files</span>
-                  <span className="text-sm text-muted-foreground">
-                    Keep originals safe, create organized copies.
-                  </span>
+        <div className="grid gap-6 py-4">
+          <div className="space-y-3">
+            <Label className="text-base font-semibold">Action</Label>
+            <RadioGroup value={action} onValueChange={(v) => setAction(v as "copy" | "move")} className="flex flex-col space-y-2">
+              <div className="flex items-center gap-3 rounded-md border p-4 hover:bg-muted/50 cursor-pointer">
+                <RadioGroupItem value="copy" id="act-copy" />
+                <Label htmlFor="act-copy" className="flex-1 cursor-pointer font-normal">
+                  <span className="block font-semibold">Copy</span>
+                  <span className="text-sm text-muted-foreground">Originals stay untouched. Organized copies go to a new folder.</span>
                 </Label>
               </div>
-              <div className="flex items-center space-x-3 space-y-0 rounded-md border p-4 hover:bg-muted/50 cursor-pointer">
-                <RadioGroupItem value="move" id="action-move" />
-                <Label htmlFor="action-move" className="flex-1 cursor-pointer font-normal">
-                  <span className="block font-semibold text-destructive">Move Files</span>
-                  <span className="text-sm text-muted-foreground">
-                    Move files directly to their new folders.
-                  </span>
+              <div className="flex items-center gap-3 rounded-md border p-4 hover:bg-muted/50 cursor-pointer">
+                <RadioGroupItem value="move" id="act-move" />
+                <Label htmlFor="act-move" className="flex-1 cursor-pointer font-normal">
+                  <span className="block font-semibold text-destructive">Move</span>
+                  <span className="text-sm text-muted-foreground">Files are written to the new organized structure only.</span>
                 </Label>
               </div>
             </RadioGroup>
           </div>
 
           <div className="flex items-center justify-between rounded-md border p-4">
-            <div className="space-y-0.5">
-              <Label htmlFor="dry-run" className="text-base font-semibold">
-                Dry Run
-              </Label>
-              <p className="text-sm text-muted-foreground">
-                Simulate the process without actually copying or moving files.
-              </p>
+            <div>
+              <Label htmlFor="dry-run" className="text-base font-semibold">Dry Run</Label>
+              <p className="text-sm text-muted-foreground">Preview the plan without writing any files.</p>
             </div>
             <Switch id="dry-run" checked={dryRun} onCheckedChange={setDryRun} />
           </div>
+
+          {!dryRun && (
+            <Alert className="border-primary/30 bg-primary/5">
+              {supportsDirectWrite ? (
+                <>
+                  <FolderOpen className="h-4 w-4 text-primary" />
+                  <AlertDescription>
+                    <strong>Direct folder write supported.</strong> After clicking Start, your browser will ask you to pick an output folder. Files will be saved there directly — no download needed.
+                  </AlertDescription>
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4 text-primary" />
+                  <AlertDescription>
+                    <strong>ZIP download.</strong> Your browser doesn't support direct folder writing (try Chrome on desktop for that). The organized files will be packaged into a ZIP you can save and extract anywhere.
+                  </AlertDescription>
+                </>
+              )}
+            </Alert>
+          )}
+
+          {!dryRun && !supportsDirectWrite && (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                For iPhones and Safari: download the ZIP, open the Files app, tap the ZIP to extract it — your organized folder structure will appear there.
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isProcessing}>
-            Cancel
-          </Button>
-          <Button onClick={handleStartProcess} disabled={isProcessing}>
-            {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Start Organizing
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={() => onConfirm(action, dryRun)}>
+            {dryRun ? "Preview Plan" : supportsDirectWrite ? "Pick Output Folder & Start" : "Build ZIP & Start"}
           </Button>
         </DialogFooter>
       </DialogContent>

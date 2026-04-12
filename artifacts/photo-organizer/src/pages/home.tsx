@@ -1,42 +1,202 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
+import { extractFileMeta, type FileMeta } from "@/lib/exif-extractor";
+import { reverseGeocode, buildTargetFolder } from "@/lib/geocoder";
 import { UploadZone } from "@/components/upload-zone";
 import { ScanResults } from "@/components/scan-results";
+import { ProcessingDialog } from "@/components/processing-dialog";
 import { ProgressView } from "@/components/progress-view";
 import { SummaryView } from "@/components/summary-view";
-import { ProcessingDialog } from "@/components/processing-dialog";
-import type { ScanResponse, ProcessResponse } from "@workspace/api-client-react/src/generated/api.schemas";
 
-export type AppState = "upload" | "scan_results" | "processing" | "complete";
+export type AppState = "upload" | "scanning" | "scan_results" | "processing" | "complete";
+
+export interface ProcessResult {
+  action: "copy" | "move";
+  dryRun: boolean;
+  processedCount: number;
+  skippedCount: number;
+  errorCount: number;
+  locations: string[];
+  log: string[];
+  zipBlob: Blob | null;
+}
 
 export default function Home() {
   const [appState, setAppState] = useState<AppState>("upload");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [scanResponse, setScanResponse] = useState<ScanResponse | null>(null);
-  const [processResponse, setProcessResponse] = useState<ProcessResponse | null>(null);
-  const [isProcessingDialogOpen, setProcessingDialogOpen] = useState(false);
+  const [files, setFiles] = useState<FileMeta[]>([]);
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, label: "" });
+  const [processProgress, setProcessProgress] = useState({ current: 0, total: 0, label: "" });
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [processResult, setProcessResult] = useState<ProcessResult | null>(null);
 
-  const handleScanComplete = (res: ScanResponse) => {
-    setSessionId(res.sessionId);
-    setScanResponse(res);
+  // Abort controller so we can cancel in-flight scans
+  const abortRef = useRef<AbortController | null>(null);
+
+  const handleFiles = useCallback(async (rawFiles: File[]) => {
+    if (!rawFiles.length) return;
+
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    setFiles([]);
+    setAppState("scanning");
+    setScanProgress({ current: 0, total: rawFiles.length, label: "Starting…" });
+
+    const results: FileMeta[] = [];
+    const seenSizes = new Map<string, number>(); // "size-ext" -> count
+
+    for (let i = 0; i < rawFiles.length; i++) {
+      if (ctrl.signal.aborted) return;
+      const f = rawFiles[i];
+      setScanProgress({ current: i + 1, total: rawFiles.length, label: f.name });
+
+      const meta = await extractFileMeta(f);
+
+      // Geocode if GPS is available
+      if (meta.lat !== null && meta.lon !== null) {
+        meta.location = await reverseGeocode(meta.lat, meta.lon);
+      }
+
+      // Build target folder path
+      meta.targetFolder = buildTargetFolder({
+        location: meta.location,
+        year: meta.year,
+        month: meta.month,
+        kind: meta.kind,
+      });
+
+      // Duplicate detection: same size + extension
+      const dupKey = `${f.size}-${meta.ext}`;
+      const prev = seenSizes.get(dupKey);
+      if (prev !== undefined && prev === f.size) {
+        meta.isDuplicate = true;
+      } else {
+        seenSizes.set(dupKey, f.size);
+      }
+
+      results.push(meta);
+    }
+
+    if (ctrl.signal.aborted) return;
+    setFiles(results);
     setAppState("scan_results");
-  };
+  }, []);
 
-  const handleProcessStart = () => {
-    setProcessingDialogOpen(false);
-    setAppState("processing");
-  };
+  const handleProcess = useCallback(
+    async (action: "copy" | "move", dryRun: boolean) => {
+      setDialogOpen(false);
+      setAppState("processing");
+      setProcessProgress({ current: 0, total: files.length, label: "" });
 
-  const handleProcessComplete = (result: ProcessResponse) => {
-    setProcessResponse(result);
-    setAppState("complete");
-  };
+      const log: string[] = [];
+      let processed = 0;
+      let skipped = 0;
+      let errors = 0;
+      const locationsSet = new Set<string>();
 
-  const handleStartOver = () => {
-    setSessionId(null);
-    setScanResponse(null);
-    setProcessResponse(null);
+      // Try File System Access API for direct folder write (Chrome desktop only)
+      let outDirHandle: FileSystemDirectoryHandle | null = null;
+      const supportsFilePicker = typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+      if (!dryRun && supportsFilePicker) {
+        try {
+          outDirHandle = await (window as Window & { showDirectoryPicker: (o?: object) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({
+            mode: "readwrite",
+            startIn: "documents",
+            id: "photo-organizer-output",
+          });
+        } catch {
+          // User cancelled picker — fall back to ZIP
+          outDirHandle = null;
+        }
+      }
+
+      // If direct write isn't available, build a ZIP
+      let JSZip: typeof import("jszip") | null = null;
+      let zip: InstanceType<typeof import("jszip")> | null = null;
+      if (!dryRun && !outDirHandle) {
+        const mod = await import("jszip");
+        JSZip = mod.default;
+        zip = new JSZip();
+      }
+
+      for (let i = 0; i < files.length; i++) {
+        const meta = files[i];
+        setProcessProgress({ current: i + 1, total: files.length, label: meta.file.name });
+
+        if (meta.isDuplicate) {
+          skipped++;
+          log.push(`SKIP (duplicate): ${meta.originalName}`);
+          continue;
+        }
+
+        const destPath = `${meta.targetFolder}/${meta.file.name}`;
+
+        if (dryRun) {
+          log.push(`DRY RUN ${action.toUpperCase()}: ${meta.originalName} → ${destPath}`);
+          processed++;
+          if (meta.location) locationsSet.add(meta.location);
+          continue;
+        }
+
+        try {
+          const arrayBuf = await meta.file.arrayBuffer();
+
+          if (outDirHandle) {
+            // Write directly to user's local folder
+            const pathParts = destPath.split("/");
+            let dirHandle: FileSystemDirectoryHandle = outDirHandle;
+            for (let p = 0; p < pathParts.length - 1; p++) {
+              dirHandle = await dirHandle.getDirectoryHandle(pathParts[p], { create: true });
+            }
+            const fileHandle = await dirHandle.getFileHandle(pathParts[pathParts.length - 1], { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(arrayBuf);
+            await writable.close();
+            log.push(`${action === "copy" ? "COPY" : "MOVE"}: ${meta.originalName} → ${destPath}`);
+          } else if (zip) {
+            // Add to ZIP
+            zip.file(destPath, arrayBuf);
+            log.push(`${action === "copy" ? "COPY" : "MOVE"}: ${meta.originalName} → ${destPath}`);
+          }
+
+          processed++;
+          if (meta.location) locationsSet.add(meta.location);
+        } catch (err) {
+          errors++;
+          log.push(`ERROR: ${meta.originalName} — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      let zipBlob: Blob | null = null;
+      if (zip) {
+        zipBlob = await zip.generateAsync({
+          type: "blob",
+          compression: "STORE", // no compression — preserves image quality and is fast
+        });
+      }
+
+      setProcessResult({
+        action,
+        dryRun,
+        processedCount: processed,
+        skippedCount: skipped,
+        errorCount: errors,
+        locations: Array.from(locationsSet),
+        log,
+        zipBlob,
+      });
+      setAppState("complete");
+    },
+    [files]
+  );
+
+  const handleStartOver = useCallback(() => {
+    abortRef.current?.abort();
+    setFiles([]);
+    setProcessResult(null);
     setAppState("upload");
-  };
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col w-full h-full animate-in fade-in duration-500">
@@ -46,49 +206,58 @@ export default function Home() {
             <div className="mb-8 text-center">
               <h2 className="text-3xl font-bold tracking-tight mb-2">Organize Your Memories</h2>
               <p className="text-muted-foreground">
-                Drop your messy folders here. We'll extract dates and GPS locations to sort everything perfectly into year/month/location folders.
+                Select photos and videos — we'll read their EXIF dates and GPS locations and sort them into neat folders on your device.
               </p>
             </div>
-            <UploadZone onScanComplete={handleScanComplete} />
+            <UploadZone onFiles={handleFiles} />
           </div>
         </div>
       )}
 
-      {appState === "scan_results" && scanResponse && (
+      {appState === "scanning" && (
+        <div className="flex-1 flex flex-col justify-center py-12">
+          <ProgressView
+            label="Reading metadata…"
+            current={scanProgress.current}
+            total={scanProgress.total}
+            currentFile={scanProgress.label}
+          />
+        </div>
+      )}
+
+      {appState === "scan_results" && (
         <div className="flex-1 flex flex-col h-full overflow-hidden">
           <ScanResults
-            scanData={scanResponse}
-            onProcessClick={() => setProcessingDialogOpen(true)}
+            files={files}
+            onProcessClick={() => setDialogOpen(true)}
             onStartOver={handleStartOver}
           />
         </div>
       )}
 
-      {appState === "processing" && sessionId && (
+      {appState === "processing" && (
         <div className="flex-1 flex flex-col justify-center py-12">
-          <ProgressView sessionId={sessionId} />
-        </div>
-      )}
-
-      {appState === "complete" && processResponse && (
-        <div className="flex-1 flex flex-col justify-center py-12">
-          <SummaryView
-            sessionId={sessionId!}
-            processResult={processResponse}
-            onStartOver={handleStartOver}
+          <ProgressView
+            label="Organizing files…"
+            current={processProgress.current}
+            total={processProgress.total}
+            currentFile={processProgress.label}
           />
         </div>
       )}
 
-      {sessionId && (
-        <ProcessingDialog
-          sessionId={sessionId}
-          open={isProcessingDialogOpen}
-          onOpenChange={setProcessingDialogOpen}
-          onProcessStarted={handleProcessStart}
-          onProcessComplete={handleProcessComplete}
-        />
+      {appState === "complete" && processResult && (
+        <div className="flex-1 flex flex-col justify-center py-12">
+          <SummaryView result={processResult} onStartOver={handleStartOver} />
+        </div>
       )}
+
+      <ProcessingDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onConfirm={handleProcess}
+        supportsDirectWrite={typeof window !== "undefined" && "showDirectoryPicker" in window}
+      />
     </div>
   );
 }
