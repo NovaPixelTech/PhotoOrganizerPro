@@ -25,13 +25,13 @@ export interface FileMeta {
   month: string | null;
   lat: number | null;
   lon: number | null;
-  location: string | null;       // filled in after geocoding
-  targetFolder: string | null;   // filled in after geocoding
+  location: string | null;
+  targetFolder: string | null;
   isDuplicate: boolean;
   error: string | null;
 }
 
-/** Parse date/GPS from a File using exifr (browser-side) */
+/** Parse date/GPS from a File using exifr (runs fully in the browser). */
 export async function extractFileMeta(file: File): Promise<FileMeta> {
   const kind = getFileKind(file.name);
   const ext  = getExt(file.name);
@@ -50,31 +50,35 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
     error: null,
   };
 
-  // Videos: try to get date from filename or file.lastModified
-  if (kind === "video" || kind === "unknown") {
-    const dateFromName = parseDateFromName(file.name);
-    if (dateFromName) {
-      base.year  = dateFromName.year;
-      base.month = dateFromName.month;
-    } else {
-      const d = new Date(file.lastModified);
-      base.year  = String(d.getFullYear());
-      base.month = String(d.getMonth() + 1).padStart(2, "0");
+  // --- GPS (works for JPG, HEIC, PNG, MOV, MP4 …) ---
+  // exifr.gps() returns {latitude, longitude} as decimal floats directly,
+  // avoiding the DMS-array issue that bites when using parse() + pick().
+  try {
+    const gps = await exifr.gps(file);
+    if (gps && typeof gps.latitude === "number" && typeof gps.longitude === "number") {
+      base.lat = gps.latitude;
+      base.lon = gps.longitude;
     }
-    return base;
+  } catch {
+    // GPS simply not present — not an error
   }
 
-  // Images: use exifr
+  // --- Date/time ---
   try {
+    // Use parse() without pick so all date tags are available.
+    // translateValues:false keeps strings as-is; exifr still converts Date fields.
     const tags = await exifr.parse(file, {
       tiff: true,
       exif: true,
-      gps: true,
+      gps: false,  // already handled above
       ifd0: true,
-      pick: ["DateTimeOriginal", "DateTime", "CreateDate", "GPSLatitude", "GPSLongitude", "GPSLatitudeRef", "GPSLongitudeRef"],
+      xmp: false,
+      iptc: false,
+      jfif: false,
     });
 
     if (tags) {
+      // Prefer DateTimeOriginal, fall back to CreateDate / DateTime
       const raw: Date | string | undefined =
         tags.DateTimeOriginal ?? tags.CreateDate ?? tags.DateTime;
 
@@ -82,34 +86,27 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
         base.year  = String(raw.getFullYear());
         base.month = String(raw.getMonth() + 1).padStart(2, "0");
       } else if (typeof raw === "string") {
+        // e.g. "2023:07:14 10:30:00"
         const m = raw.match(/^(\d{4})[:\-](\d{2})/);
         if (m) { base.year = m[1]; base.month = m[2]; }
       }
-
-      if (typeof tags.GPSLatitude === "number" && typeof tags.GPSLongitude === "number") {
-        base.lat = tags.GPSLatitude;
-        base.lon = tags.GPSLongitude;
-      }
     }
   } catch {
-    // exifr can fail on some files — fall back to lastModified
+    // exifr couldn't read date tags — fall through to fallbacks
+  }
+
+  // --- Date fallbacks ---
+  if (!base.year) {
     const dateFromName = parseDateFromName(file.name);
     if (dateFromName) {
       base.year  = dateFromName.year;
       base.month = dateFromName.month;
     } else {
       const d = new Date(file.lastModified);
-      base.year  = String(d.getFullYear());
-      base.month = String(d.getMonth() + 1).padStart(2, "0");
-    }
-  }
-
-  // Fallback: try filename date
-  if (!base.year) {
-    const dateFromName = parseDateFromName(file.name);
-    if (dateFromName) {
-      base.year  = dateFromName.year;
-      base.month = dateFromName.month;
+      if (!isNaN(d.getTime())) {
+        base.year  = String(d.getFullYear());
+        base.month = String(d.getMonth() + 1).padStart(2, "0");
+      }
     }
   }
 
@@ -118,8 +115,12 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
 
 function parseDateFromName(name: string): { year: string; month: string } | null {
   const m = name.match(/(\d{4})[_\-:]?(\d{2})/);
-  if (m && parseInt(m[1]) > 1990 && parseInt(m[2]) >= 1 && parseInt(m[2]) <= 12) {
-    return { year: m[1], month: m[2].padStart(2, "0") };
+  if (m) {
+    const year  = parseInt(m[1]);
+    const month = parseInt(m[2]);
+    if (year > 1990 && year < 2100 && month >= 1 && month <= 12) {
+      return { year: String(year), month: String(month).padStart(2, "0") };
+    }
   }
   return null;
 }
