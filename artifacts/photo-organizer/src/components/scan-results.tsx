@@ -90,9 +90,11 @@ export function ScanResults({ files, onProcessClick, onStartOver }: ScanResultsP
                         ? <span className="flex items-center gap-1"><Calendar className="w-3 h-3 text-primary" />{f.year}-{f.month}</span>
                         : <span className="text-muted-foreground">Unknown</span>}
                     </TableCell>
-                    <TableCell className="text-sm max-w-[140px]">
+                    <TableCell className="text-sm max-w-[160px]">
                       {f.location
-                        ? <span className="flex items-center gap-1"><MapPin className="w-3 h-3 text-primary shrink-0" /><span className="truncate">{f.location}</span></span>
+                        ? <span className="flex items-center gap-1"><MapPin className="w-3 h-3 text-primary shrink-0" /><span className="truncate" title={`${f.lat?.toFixed(4)}, ${f.lon?.toFixed(4)}`}>{f.location}</span></span>
+                        : f.lat !== null
+                        ? <span className="flex items-center gap-1 text-amber-500"><MapPin className="w-3 h-3 shrink-0" /><span className="truncate font-mono text-xs">{f.lat.toFixed(4)},{f.lon?.toFixed(4)}</span></span>
                         : <span className="text-muted-foreground">No GPS</span>}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground max-w-[200px]">
