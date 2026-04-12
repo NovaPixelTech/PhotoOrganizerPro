@@ -4,8 +4,7 @@ import { ScanResults } from "@/components/scan-results";
 import { ProgressView } from "@/components/progress-view";
 import { SummaryView } from "@/components/summary-view";
 import { ProcessingDialog } from "@/components/processing-dialog";
-import { ScanResponse } from "@workspace/api-client-react/src/generated/api.schemas";
-import { useQueryClient } from "@tanstack/react-query";
+import type { ScanResponse, ProcessResponse } from "@workspace/api-client-react/src/generated/api.schemas";
 
 export type AppState = "upload" | "scan_results" | "processing" | "complete";
 
@@ -13,16 +12,8 @@ export default function Home() {
   const [appState, setAppState] = useState<AppState>("upload");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [scanResponse, setScanResponse] = useState<ScanResponse | null>(null);
+  const [processResponse, setProcessResponse] = useState<ProcessResponse | null>(null);
   const [isProcessingDialogOpen, setProcessingDialogOpen] = useState(false);
-
-  const queryClient = useQueryClient();
-
-  const handleUploadComplete = (sid: string) => {
-    setSessionId(sid);
-    // Move to scanning, the actual scan happens via useScanFiles in the child or we do it here.
-    // Wait, useScanFiles should be triggered after upload. 
-    // Actually, UploadZone will call useUploadFiles, then call useScanFiles, then call handleScanComplete.
-  };
 
   const handleScanComplete = (res: ScanResponse) => {
     setSessionId(res.sessionId);
@@ -35,13 +26,16 @@ export default function Home() {
     setAppState("processing");
   };
 
+  const handleProcessComplete = (result: ProcessResponse) => {
+    setProcessResponse(result);
+    setAppState("complete");
+  };
+
   const handleStartOver = () => {
     setSessionId(null);
     setScanResponse(null);
+    setProcessResponse(null);
     setAppState("upload");
-    if (sessionId) {
-      queryClient.removeQueries({ queryKey: getGetSessionQueryKey(sessionId) });
-    }
   };
 
   return (
@@ -55,15 +49,15 @@ export default function Home() {
                 Drop your messy folders here. We'll extract dates and GPS locations to sort everything perfectly into year/month/location folders.
               </p>
             </div>
-            <UploadZone onScanComplete={handleScanComplete} onUploadStart={(sid) => setSessionId(sid)} />
+            <UploadZone onScanComplete={handleScanComplete} />
           </div>
         </div>
       )}
 
       {appState === "scan_results" && scanResponse && (
         <div className="flex-1 flex flex-col h-full overflow-hidden">
-          <ScanResults 
-            scanData={scanResponse} 
+          <ScanResults
+            scanData={scanResponse}
             onProcessClick={() => setProcessingDialogOpen(true)}
             onStartOver={handleStartOver}
           />
@@ -72,28 +66,27 @@ export default function Home() {
 
       {appState === "processing" && sessionId && (
         <div className="flex-1 flex flex-col justify-center py-12">
-          <ProgressView 
-            sessionId={sessionId} 
-            onComplete={() => setAppState("complete")}
-          />
+          <ProgressView sessionId={sessionId} />
         </div>
       )}
 
-      {appState === "complete" && sessionId && (
+      {appState === "complete" && processResponse && (
         <div className="flex-1 flex flex-col justify-center py-12">
-          <SummaryView 
-            sessionId={sessionId} 
+          <SummaryView
+            sessionId={sessionId!}
+            processResult={processResponse}
             onStartOver={handleStartOver}
           />
         </div>
       )}
 
       {sessionId && (
-        <ProcessingDialog 
+        <ProcessingDialog
           sessionId={sessionId}
           open={isProcessingDialogOpen}
           onOpenChange={setProcessingDialogOpen}
           onProcessStarted={handleProcessStart}
+          onProcessComplete={handleProcessComplete}
         />
       )}
     </div>
