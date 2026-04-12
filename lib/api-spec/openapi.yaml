@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Photo Organizer API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: organize
+    description: Photo organization operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,146 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /organize/scan:
+    post:
+      operationId: scanFiles
+      tags: [organize]
+      summary: Scan and analyze files
+      description: Scans uploaded files, extracts metadata, and returns a preview of how files would be organized
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanRequest"
+      responses:
+        "200":
+          description: Scan started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organize/process:
+    post:
+      operationId: processFiles
+      tags: [organize]
+      summary: Process and organize files
+      description: Organizes files based on metadata, either copying or moving them
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcessRequest"
+      responses:
+        "200":
+          description: Processing result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organize/upload:
+    post:
+      operationId: uploadFiles
+      tags: [organize]
+      summary: Upload files for processing
+      description: Upload media files to be analyzed and organized
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+              required:
+                - files
+      responses:
+        "200":
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organize/download:
+    get:
+      operationId: downloadOrganized
+      tags: [organize]
+      summary: Download organized files as ZIP
+      description: Download the organized folder structure as a ZIP archive
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ZIP file
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /organize/session/{sessionId}:
+    get:
+      operationId: getSession
+      tags: [organize]
+      summary: Get session status and results
+      description: Get the current state of an organization session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetails"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +176,222 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+      required:
+        - error
+
+    FileMetadata:
+      type: object
+      properties:
+        originalName:
+          type: string
+        fileType:
+          type: string
+          enum: [image, video, unknown]
+        extension:
+          type: string
+        year:
+          type: string
+          nullable: true
+        month:
+          type: string
+          nullable: true
+        latitude:
+          type: number
+          nullable: true
+        longitude:
+          type: number
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        targetPath:
+          type: string
+        isDuplicate:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        sizeBytes:
+          type: number
+      required:
+        - originalName
+        - fileType
+        - extension
+        - year
+        - month
+        - latitude
+        - longitude
+        - location
+        - targetPath
+        - isDuplicate
+        - error
+        - sizeBytes
+
+    ScanRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        outputDir:
+          type: string
+          nullable: true
+      required:
+        - sessionId
+
+    ScanResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        totalFiles:
+          type: number
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileMetadata"
+        summary:
+          $ref: "#/components/schemas/ScanSummary"
+      required:
+        - sessionId
+        - totalFiles
+        - files
+        - summary
+
+    ScanSummary:
+      type: object
+      properties:
+        images:
+          type: number
+        videos:
+          type: number
+        unknown:
+          type: number
+        withGps:
+          type: number
+        withDate:
+          type: number
+        duplicates:
+          type: number
+        locations:
+          type: array
+          items:
+            type: string
+        errors:
+          type: number
+      required:
+        - images
+        - videos
+        - unknown
+        - withGps
+        - withDate
+        - duplicates
+        - locations
+        - errors
+
+    ProcessRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        action:
+          type: string
+          enum: [copy, move]
+        dryRun:
+          type: boolean
+        outputDir:
+          type: string
+          nullable: true
+      required:
+        - sessionId
+        - action
+        - dryRun
+
+    ProcessResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        success:
+          type: boolean
+        processedCount:
+          type: number
+        errorCount:
+          type: number
+        skippedCount:
+          type: number
+        dryRun:
+          type: boolean
+        action:
+          type: string
+        log:
+          type: array
+          items:
+            type: string
+        summary:
+          $ref: "#/components/schemas/ScanSummary"
+      required:
+        - sessionId
+        - success
+        - processedCount
+        - errorCount
+        - skippedCount
+        - dryRun
+        - action
+        - log
+        - summary
+
+    UploadResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        fileCount:
+          type: number
+        message:
+          type: string
+      required:
+        - sessionId
+        - fileCount
+        - message
+
+    SessionDetails:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        status:
+          type: string
+          enum: [uploading, scanning, processing, complete, error]
+        totalFiles:
+          type: number
+        processedFiles:
+          type: number
+        currentFile:
+          type: string
+          nullable: true
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileMetadata"
+        summary:
+          $ref: "#/components/schemas/ScanSummary"
+          nullable: true
+        processResult:
+          $ref: "#/components/schemas/ProcessResponse"
+          nullable: true
+      required:
+        - sessionId
+        - status
+        - totalFiles
+        - processedFiles
+        - currentFile
+        - files
+        - summary
+        - processResult

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Photo Organizer"
+version = "1.0.0"
+id = "artifacts/photo-organizer"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21816
+
+[services.development]
+run = "pnpm --filter @workspace/photo-organizer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/photo-organizer", "run", "build" ]
+publicDir = "artifacts/photo-organizer/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21816"
+BASE_PATH = "/"
