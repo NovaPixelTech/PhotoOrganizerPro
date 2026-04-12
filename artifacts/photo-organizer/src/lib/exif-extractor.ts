@@ -1,4 +1,5 @@
 import exifr from "exifr";
+import { extractVideoMeta } from "./video-meta";
 
 export type FileKind = "image" | "video" | "unknown";
 
@@ -31,7 +32,7 @@ export interface FileMeta {
   error: string | null;
 }
 
-/** Parse date/GPS from a File using exifr (runs fully in the browser). */
+/** Parse date/GPS from a File, entirely in the browser. */
 export async function extractFileMeta(file: File): Promise<FileMeta> {
   const kind = getFileKind(file.name);
   const ext  = getExt(file.name);
@@ -50,27 +51,39 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
     error: null,
   };
 
-  // --- GPS (works for JPG, HEIC, PNG, MOV, MP4 …) ---
-  // exifr.gps() returns {latitude, longitude} as decimal floats directly,
-  // avoiding the DMS-array issue that bites when using parse() + pick().
+  // ── Videos: binary QuickTime/ISOBMFF parser ──────────────────────────────
+  if (kind === "video") {
+    const vmeta = await extractVideoMeta(file);
+    if (vmeta.lat !== null) base.lat = vmeta.lat;
+    if (vmeta.lon !== null) base.lon = vmeta.lon;
+    if (vmeta.year)  base.year  = vmeta.year;
+    if (vmeta.month) base.month = vmeta.month;
+
+    // Fall back to filename date, then file.lastModified
+    if (!base.year) applyDateFallback(file, base);
+    return base;
+  }
+
+  // ── Images: exifr ────────────────────────────────────────────────────────
+
+  // GPS — use the dedicated exifr.gps() which returns decimal floats directly,
+  // avoiding the DMS-array issue that appears when using parse() + pick().
   try {
     const gps = await exifr.gps(file);
     if (gps && typeof gps.latitude === "number" && typeof gps.longitude === "number") {
       base.lat = gps.latitude;
-      base.lon = gps.longitude;
+      base.lon  = gps.longitude;
     }
   } catch {
-    // GPS simply not present — not an error
+    // GPS simply absent — not an error
   }
 
-  // --- Date/time ---
+  // Date
   try {
-    // Use parse() without pick so all date tags are available.
-    // translateValues:false keeps strings as-is; exifr still converts Date fields.
     const tags = await exifr.parse(file, {
       tiff: true,
       exif: true,
-      gps: false,  // already handled above
+      gps: false,   // already handled above
       ifd0: true,
       xmp: false,
       iptc: false,
@@ -78,7 +91,6 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
     });
 
     if (tags) {
-      // Prefer DateTimeOriginal, fall back to CreateDate / DateTime
       const raw: Date | string | undefined =
         tags.DateTimeOriginal ?? tags.CreateDate ?? tags.DateTime;
 
@@ -86,31 +98,31 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
         base.year  = String(raw.getFullYear());
         base.month = String(raw.getMonth() + 1).padStart(2, "0");
       } else if (typeof raw === "string") {
-        // e.g. "2023:07:14 10:30:00"
         const m = raw.match(/^(\d{4})[:\-](\d{2})/);
         if (m) { base.year = m[1]; base.month = m[2]; }
       }
     }
   } catch {
-    // exifr couldn't read date tags — fall through to fallbacks
+    // exifr couldn't read tags — fall through
   }
 
-  // --- Date fallbacks ---
-  if (!base.year) {
-    const dateFromName = parseDateFromName(file.name);
-    if (dateFromName) {
-      base.year  = dateFromName.year;
-      base.month = dateFromName.month;
-    } else {
-      const d = new Date(file.lastModified);
-      if (!isNaN(d.getTime())) {
-        base.year  = String(d.getFullYear());
-        base.month = String(d.getMonth() + 1).padStart(2, "0");
-      }
-    }
-  }
-
+  if (!base.year) applyDateFallback(file, base);
   return base;
+}
+
+/** Apply filename-date → lastModified fallback chain. */
+function applyDateFallback(file: File, base: FileMeta): void {
+  const nameDate = parseDateFromName(file.name);
+  if (nameDate) {
+    base.year  = nameDate.year;
+    base.month = nameDate.month;
+    return;
+  }
+  const d = new Date(file.lastModified);
+  if (!isNaN(d.getTime())) {
+    base.year  = String(d.getFullYear());
+    base.month = String(d.getMonth() + 1).padStart(2, "0");
+  }
 }
 
 function parseDateFromName(name: string): { year: string; month: string } | null {
