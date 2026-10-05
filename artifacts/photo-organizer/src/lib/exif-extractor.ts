@@ -80,15 +80,7 @@ export async function extractFileMeta(file: File): Promise<FileMeta> {
 
   // Date
   try {
-    const tags = await exifr.parse(file, {
-      tiff: true,
-      exif: true,
-      gps: false,   // already handled above
-      ifd0: true,
-      xmp: false,
-      iptc: false,
-      jfif: false,
-    });
+    const tags = await exifr.parse(file);
 
     if (tags) {
       const raw: Date | string | undefined =

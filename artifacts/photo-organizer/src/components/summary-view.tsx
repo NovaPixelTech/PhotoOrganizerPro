@@ -18,8 +18,11 @@ export function SummaryView({ result, onStartOver }: SummaryViewProps) {
     if (result.zipBlob) {
       const url = URL.createObjectURL(result.zipBlob);
       zipUrl.current = url;
-      return () => URL.revokeObjectURL(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
     }
+    return undefined;
   }, [result.zipBlob]);
 
   const downloadZip = () => {

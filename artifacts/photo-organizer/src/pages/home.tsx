@@ -100,7 +100,7 @@ export default function Home() {
 
       if (!dryRun && supportsFilePicker) {
         try {
-          outDirHandle = await (window as Window & { showDirectoryPicker: (o?: object) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({
+          outDirHandle = await (window as unknown as Window & { showDirectoryPicker: (o?: object) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({
             mode: "readwrite",
             startIn: "documents",
             id: "photo-organizer-output",
